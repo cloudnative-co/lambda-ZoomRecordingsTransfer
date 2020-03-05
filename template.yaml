@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+    ProjectName:
+        Type: String
+        Default: ZoomRecordingsTransfer
+    RolePath:
+        Description: "Path of IAM Role"
+        Type: String
+        Default: "/Lambda/ZoomRecordingTransfer/"
+    ZoomVerificationToken:
+        Type: String
+        NoEcho: true
+    BoxClientId:
+        Type: String
+        NoEcho: true
+    BoxClientSecret:
+        Type: String
+        NoEcho: true
+    BoxEnterpriseId:
+        Type: String
+    BoxJwtKeyId:
+        Type: String
+        NoEcho: true
+    BoxPrivateKeyId:
+        Type: String
+        NoEcho: true
+    BoxFolderId:
+        Type: String
+    BoxUser:
+        Type: String
+        Default: "Appuser"
+Resources:
+    FunctionRole:
+        Description: "[Create] IAM Role"
+        Type: 'AWS::IAM::Role'
+        Properties:
+            Description: Role for the Zoom Recording Transfer
+            RoleName: !Sub "${ProjectName}-Receiver-Role"
+            Path: !Ref RolePath
+            AssumeRolePolicyDocument:
+                Statement:
+                  - Action: 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                        Service: lambda.amazonaws.com
+                  - Action: 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                        Service: apigateway.amazonaws.com
+            Policies:
+              - PolicyName: !Sub "${ProjectName}-Receiver-Policy"
+                PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                      - Effect: Allow
+                        Action:
+                          - "logs:CreateLogGroup"
+                          - "logs:CreateLogStream"
+                          - "logs:PutLogEvents"
+                          - "lambda:InvokeFunction"
+                          - "kms:Decrypt"
+                        Resource: '*'
+    # Lambda用のKMSキーの作成
+    KmsKey:
+        Description: "[Create] KMS Key for Lambda functions"
+        Type: 'AWS::KMS::Key'
+        Properties:
+            Description: Encrypt/Decrypt enviroment parameter
+            Enabled: true
+            KeyPolicy:
+                Id: key-default-1
+                Version: 2012-10-17
+                Statement:
+                  - Sid: Enable IAM Permission
+                    Effect: Allow
+                    Action: kms:*
+                    Resource: "*"
+                    Principal:
+                        AWS: !Join [ "", [ "arn:aws:iam::", !Ref "AWS::AccountId", ":root" ] ]
+                  - Sid: Allow use of the key from Lambda
+                    Effect: Allow
+                    Principal:
+                        AWS: !GetAtt FunctionRole.Arn
+                    Action:
+                      - kms:Decrypt
+                      - kms:Encrypt
+                    Resource: "*"
+        DependsOn: FunctionRole
+    KmsKeyAlias:
+        Type: 'AWS::KMS::Alias'
+        Properties:
+            AliasName: !Join ["/", ["alias", "lambda", !Ref ProjectName]]
+            TargetKeyId: !Ref KmsKey
+        DependsOn: KmsKey
+    # KSM暗号化用CloudFormationカスタムリソースの作成
+    EncrypterFunctionExecutionRole:
+        Type: 'AWS::IAM::Role'
+        Properties:
+            Description: Role for the Zoom Recording Transfer Encrypter
+            RoleName: !Sub "${ProjectName}-Encrypter-Role"
+            AssumeRolePolicyDocument:
+                Statement:
+                  - Action: 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                        Service: lambda.amazonaws.com
+            Policies:
+              - PolicyDocument:
+                    Statement:
+                      - Action:
+                          - kms:Encrypt
+                        Effect: Allow
+                        Resource: '*'
+                PolicyName: !Sub "${ProjectName}-Encrypter-Policy"
+            Path: !Ref RolePath
+        DependsOn: KmsKey
+    EncrypterFunction:
+        Type: AWS::Serverless::Function
+        Properties:
+            CodeUri: encrypter/
+            Handler: app.lambda_handler
+            FunctionName: !Sub "${ProjectName}-Encrypter"
+            MemorySize: 128
+            Role: !GetAtt EncrypterFunctionExecutionRole.Arn
+            Runtime: python3.6
+            Timeout: 120
+        DependsOn: EncrypterFunctionExecutionRole
+    # --------------------------------------------------------------------------
+    # 環境変数の暗号化
+    # --------------------------------------------------------------------------
+    EncZoomVerificationToken:
+        Description: "[Encryption] Zoom Verification Token"
+        Type: Custom::Encrypter
+        Properties:
+            ServiceToken: !GetAtt EncrypterFunction.Arn
+            KeyId: !Ref KmsKey
+            Plaintext: !Ref ZoomVerificationToken
+            region: !Sub "${AWS::Region}"
+        DependsOn: EncrypterFunction
+    EncBoxClientSecret:
+        Description: "[Encryption] Box Client Secret"
+        Type: Custom::Encrypter
+        Properties:
+            ServiceToken: !GetAtt EncrypterFunction.Arn
+            KeyId: !Ref KmsKey
+            Plaintext: !Ref BoxClientSecret
+            region: !Sub "${AWS::Region}"
+        DependsOn: EncrypterFunction
+    EncBoxPrivateKeyId:
+        Description: "[Encryption] Box Client Secret"
+        Type: Custom::Encrypter
+        Properties:
+            ServiceToken: !GetAtt EncrypterFunction.Arn
+            KeyId: !Ref KmsKey
+            Plaintext: !Ref BoxPrivateKeyId
+            region: !Sub "${AWS::Region}"
+        DependsOn: EncrypterFunction
+    # --------------------------------------------------------------------------
+    # Function作成
+    # --------------------------------------------------------------------------
+    ReceiverFunction:
+        Type: AWS::Serverless::Function
+        Properties:
+            CodeUri: receiver/
+            Handler: app.lambda_handler
+            FunctionName: !Sub "${ProjectName}-Receiver"
+            Runtime: python3.6
+            KmsKeyArn: !GetAtt KmsKey.Arn
+            Role: !GetAtt FunctionRole.Arn
+            Timeout: 900
+            Environment:
+                Variables:
+                    ZOOM_VERIFICATION_TOKEN: !GetAtt EncZoomVerificationToken.Value
+                    BOX_CLIENT_ID: !Ref BoxClientId
+                    BOX_CLIENT_SECRET: !GetAtt EncBoxClientSecret.Value
+                    BOX_ENTERPRISE_ID: !Ref BoxEnterpriseId
+                    BOX_JWT_KEY_ID: !Ref BoxJwtKeyId
+                    BOX_PRIVATE_KEY: !GetAtt EncBoxPrivateKeyId.Value
+                    BOX_FOLDER_ID: !Ref BoxFolderId
+                    BOX_USER: !Ref BoxUser
+            Events:
+                Receiver:
+                    Type: Api
+                    Properties:
+                        Path: /event
+                        Method: post
+        DependsOn:
+          - EncZoomVerificationToken
+          - EncBoxClientSecret
+          - EncBoxPrivateKeyId
+    # --------------------------------------------------------------------------
+    # CloudWatchLogs
+    # --------------------------------------------------------------------------
+    ReceiverFunctionLogGroup:
+        Type: AWS::Logs::LogGroup
+        Properties:
+            LogGroupName: !Sub "/aws/lambda/${ProjectName}-Receiver"
+            RetentionInDays: 3
+Outputs:
+    ReceiverApi:
+        Description: "API Gateway endpoint URL"
+        Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/event/"
