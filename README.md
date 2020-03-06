@@ -2,6 +2,12 @@
 本プログラムはZoomの録画情報をZoomのミーティング動画終了をイベントにて検知し  
 APIGatewayとLambdaにて受け取り保存された動画をBoxに転送するものです。  
 
+# 構成
+![](./img/constitution.png)
+- ① ZoomのWebhookにてRecording 終了のイベントをAPIGateway+Lambdaに通知
+- ② Lambda内にてZoomからRecordingファイルをダウンロード
+- ③ ②にてダウンロードしたファイルをBoxにアップロード
+
 # 設定とインストール
 ## 2.1 Box側の設定
 ### 2.1.1 アプリケーション用ユーザーの作成
