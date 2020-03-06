@@ -16,7 +16,7 @@ Box上にZoomの録画ファイルを保存するフォルダを作成してく�
 [JWTの設定](https://ja.developer.box.com/guides/applications/custom-apps/jwt-setup/) に従いBoxアプリケーションを作成します  
 作成後、アプリケーションを管理者権限にて承認してください。
 
-- Zoomの開発者コンソールを選択してください  
+- Boxの開発者コンソールを選択してください  
 ![](./img/001.png)
 
 - アプリの新規作成を選びます  
@@ -88,4 +88,6 @@ Box上にZoomの録画ファイルを保存するフォルダを作成してく�
 ./deploy
 ```
 
-### 2.3.3 Webhook URLの取得
+### 2.3.3 Webhook URLの設定
+- CloudFormationを開いて出力からReceiverApiの値をコピー
+- Zoomの[Event Subscription]から[Event notification endpoint URL]にペーストして保存します。
